@@ -7923,7 +7923,7 @@ BitExpr:
 	{
 		$$ = &ast.BinaryOperationExpr{Op: opcode.Xor, L: $1, R: $3}
 	}
-|	SimpleExpr
+|	SimpleExpr %prec empty
 
 SimpleIdent:
 	Identifier
@@ -8049,6 +8049,32 @@ SimpleExpr:
 			Expr:         $2,
 			Tp:           tp,
 			FunctionType: ast.CastBinaryOperator,
+		}
+	}
+|	builtinCast '(' Expression "AS" CastType ArrayKwdOpt ')'
+	{
+		/* See https://dev.mysql.com/doc/refman/5.7/en/cast-functions.html#function_cast */
+		tp := $5.(*types.FieldType)
+		defaultFlen, defaultDecimal := mysql.GetDefaultFieldLengthAndDecimalForCast(tp.GetType())
+		if tp.GetFlen() == types.UnspecifiedLength {
+			tp.SetFlen(defaultFlen)
+		}
+		if tp.GetDecimal() == types.UnspecifiedLength {
+			tp.SetDecimal(defaultDecimal)
+		}
+		isArray := $6.(bool)
+		tp.SetArray(isArray)
+		explicitCharset := parser.explicitCharset
+		if isArray && !explicitCharset && tp.GetCharset() != charset.CharsetBin {
+			tp.SetCharset(charset.CharsetUTF8MB4)
+			tp.SetCollate(charset.CollationUTF8MB4)
+		}
+		parser.explicitCharset = false
+		$$ = &ast.FuncCastExpr{
+			Expr:            $3,
+			Tp:              tp,
+			FunctionType:    ast.CastFunction,
+			ExplicitCharSet: explicitCharset,
 		}
 	}
 |	builtinCast '(' SimpleExpr "AS" CastType ArrayKwdOpt ')'
