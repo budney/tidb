@@ -647,6 +647,14 @@ func (ft *FieldType) RestoreAsCastType(ctx *format.RestoreCtx, explicitCharset b
 		if ft.decimal > 0 {
 			ctx.WritePlainf("(%d)", ft.decimal)
 		}
+	case mysql.TypeTiny:
+		ctx.WriteKeyWord("TINYINT")
+	case mysql.TypeShort:
+		ctx.WriteKeyWord("SMALLINT")
+	case mysql.TypeInt24:
+		ctx.WriteKeyWord("MEDIUMINT")
+	case mysql.TypeLong:
+		ctx.WriteKeyWord("INT")
 	case mysql.TypeLonglong:
 		if ft.flag&mysql.UnsignedFlag != 0 {
 			ctx.WriteKeyWord("UNSIGNED")

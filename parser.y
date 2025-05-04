@@ -8051,7 +8051,7 @@ SimpleExpr:
 			FunctionType: ast.CastBinaryOperator,
 		}
 	}
-|	builtinCast '(' Expression "AS" CastType ArrayKwdOpt ')'
+|	builtinCast '(' SimpleExpr "AS" CastType ArrayKwdOpt ')'
 	{
 		/* See https://dev.mysql.com/doc/refman/5.7/en/cast-functions.html#function_cast */
 		tp := $5.(*types.FieldType)
@@ -9036,6 +9036,14 @@ CastType:
 		if tp.GetDecimal() > 0 {
 			tp.SetFlen(tp.GetFlen() + 1 + tp.GetDecimal())
 		}
+		tp.SetCharset(charset.CharsetBin)
+		tp.SetCollate(charset.CollationBin)
+		tp.AddFlag(mysql.BinaryFlag)
+		$$ = tp
+	}
+|	IntegerType
+	{
+		tp := types.NewFieldType($1.(byte))
 		tp.SetCharset(charset.CharsetBin)
 		tp.SetCollate(charset.CollationBin)
 		tp.AddFlag(mysql.BinaryFlag)

@@ -1736,6 +1736,17 @@ func TestBuiltin(t *testing.T) {
 		{"SELECT CAST(data AS CHARACTER);", true, "SELECT CAST(`data` AS CHAR)"},
 		{"SELECT CAST(data AS CHARACTER(10) CHARACTER SET utf8);", true, "SELECT CAST(`data` AS CHAR(10) CHARSET UTF8)"},
 		{"SELECT CAST(data AS BINARY)", true, "SELECT CAST(`data` AS BINARY)"},
+		{"SELECT CAST(data AS TINYINT)", true, "SELECT CAST(`data` AS TINYINT)"},
+		{"SELECT CAST(data AS INT1)", true, "SELECT CAST(`data` AS TINYINT)"},
+		{"SELECT CAST(data AS SMALLINT)", true, "SELECT CAST(`data` AS SMALLINT)"},
+		{"SELECT CAST(data AS INT2)", true, "SELECT CAST(`data` AS SMALLINT)"},
+		{"SELECT CAST(data AS MEDIUMINT)", true, "SELECT CAST(`data` AS MEDIUMINT)"},
+		{"SELECT CAST(data AS INT3)", true, "SELECT CAST(`data` AS MEDIUMINT)"},
+		{"SELECT CAST(data AS INT)", true, "SELECT CAST(`data` AS INT)"},
+		{"SELECT CAST(data AS INT4)", true, "SELECT CAST(`data` AS INT)"},
+		{"SELECT CAST(data AS BIGINT)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(data AS INT8)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(CAST(data AS DOUBLE) AS DOUBLE)", true, "SELECT CAST(CAST(`data` AS DOUBLE) AS DOUBLE)"},
 
 		// for cast as JSON
 		{"SELECT *, CAST(data AS JSON) FROM t;", true, "SELECT *,CAST(`data` AS JSON) FROM `t`"},
