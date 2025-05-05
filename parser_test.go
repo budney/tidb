@@ -400,7 +400,7 @@ func RunRestoreTest(t *testing.T, sourceSQLs, expectSQLs string, enableWindowFun
 		}
 		restoreSQLs += restoreSQL
 	}
-	require.Equalf(t, expectSQLs, restoreSQLs, "restore %v; expect %v", restoreSQLs, expectSQLs)
+	require.Equalf(t, expectSQLs, restoreSQLs, "restore %v; expect %v", sourceSQLs, restoreSQLs, expectSQLs)
 }
 
 func RunTestInRealAsFloatMode(t *testing.T, table []testCase, enableWindowFunc bool) {
@@ -1736,16 +1736,34 @@ func TestBuiltin(t *testing.T) {
 		{"SELECT CAST(data AS CHARACTER);", true, "SELECT CAST(`data` AS CHAR)"},
 		{"SELECT CAST(data AS CHARACTER(10) CHARACTER SET utf8);", true, "SELECT CAST(`data` AS CHAR(10) CHARSET UTF8)"},
 		{"SELECT CAST(data AS BINARY)", true, "SELECT CAST(`data` AS BINARY)"},
-		{"SELECT CAST(data AS TINYINT)", true, "SELECT CAST(`data` AS TINYINT)"},
-		{"SELECT CAST(data AS INT1)", true, "SELECT CAST(`data` AS TINYINT)"},
-		{"SELECT CAST(data AS SMALLINT)", true, "SELECT CAST(`data` AS SMALLINT)"},
-		{"SELECT CAST(data AS INT2)", true, "SELECT CAST(`data` AS SMALLINT)"},
-		{"SELECT CAST(data AS MEDIUMINT)", true, "SELECT CAST(`data` AS MEDIUMINT)"},
-		{"SELECT CAST(data AS INT3)", true, "SELECT CAST(`data` AS MEDIUMINT)"},
-		{"SELECT CAST(data AS INT)", true, "SELECT CAST(`data` AS INT)"},
-		{"SELECT CAST(data AS INT4)", true, "SELECT CAST(`data` AS INT)"},
+
+		// Integer types are supported, but converted to MySQL/ANSI compliant on restoration
+		{"SELECT CAST(data AS TINYINT)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(data AS INT1)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(data AS SMALLINT)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(data AS INT2)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(data AS MEDIUMINT)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(data AS INT3)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(data AS INT)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(data AS INT4)", true, "SELECT CAST(`data` AS SIGNED)"},
 		{"SELECT CAST(data AS BIGINT)", true, "SELECT CAST(`data` AS SIGNED)"},
 		{"SELECT CAST(data AS INT8)", true, "SELECT CAST(`data` AS SIGNED)"},
+
+		// And boolean types. All are interpreted as SIGNED/UNSIGNED.
+		{"SELECT CAST(data AS BOOL)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(data AS BOOL ZEROFILL)", true, "SELECT CAST(`data` AS UNSIGNED)"},
+		{"SELECT CAST(data AS BOOL SIGNED)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(data AS BOOL SIGNED ZEROFILL)", true, "SELECT CAST(`data` AS UNSIGNED)"},
+		{"SELECT CAST(data AS BOOL UNSIGNED)", true, "SELECT CAST(`data` AS UNSIGNED)"},
+		{"SELECT CAST(data AS BOOL UNSIGNED ZEROFILL)", true, "SELECT CAST(`data` AS UNSIGNED)"},
+		{"SELECT CAST(data AS BOOLEAN)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(data AS BOOLEAN ZEROFILL)", true, "SELECT CAST(`data` AS UNSIGNED)"},
+		{"SELECT CAST(data AS BOOLEAN SIGNED)", true, "SELECT CAST(`data` AS SIGNED)"},
+		{"SELECT CAST(data AS BOOLEAN SIGNED ZEROFILL)", true, "SELECT CAST(`data` AS UNSIGNED)"},
+		{"SELECT CAST(data AS BOOLEAN UNSIGNED)", true, "SELECT CAST(`data` AS UNSIGNED)"},
+		{"SELECT CAST(data AS BOOLEAN UNSIGNED ZEROFILL)", true, "SELECT CAST(`data` AS UNSIGNED)"},
+
+		// CAST can be nested in order to cast in multiple steps
 		{"SELECT CAST(CAST(data AS DOUBLE) AS DOUBLE)", true, "SELECT CAST(CAST(`data` AS DOUBLE) AS DOUBLE)"},
 
 		// for cast as JSON

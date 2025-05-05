@@ -8989,6 +8989,25 @@ CastType:
 		tp.AddFlag(mysql.BinaryFlag)
 		$$ = tp
 	}
+|	BooleanType FieldOpts
+	{
+		/* Cast to boolean types ALWAYS becomes SIGNED or UNSIGNED,
+		 * which MySQL interprets to mean BIGINT [UN]SIGNED
+		 */
+		tp := types.NewFieldType(mysql.TypeLonglong)
+		tp.SetCharset(charset.CharsetBin)
+		tp.SetCollate(charset.CollationBin)
+		tp.AddFlag(mysql.BinaryFlag)
+
+		// Apply field options here
+		for _, opt := range $2.([]*ast.TypeOpt) {
+			if opt.IsUnsigned || opt.IsZerofill {
+				tp.AddFlag(mysql.UnsignedFlag)
+			}
+		}
+
+		$$ = tp
+	}
 |	Char OptFieldLen OptBinary
 	{
 		tp := types.NewFieldType(mysql.TypeVarString)
@@ -9067,12 +9086,22 @@ CastType:
 		tp.AddFlag(mysql.BinaryFlag)
 		$$ = tp
 	}
-|	IntegerType
+|	IntegerType OptFieldLen FieldOpts
 	{
-		tp := types.NewFieldType($1.(byte))
+		/* Cast to integer types ALWAYS becomes SIGNED or UNSIGNED,
+		 * which MySQL interprets to mean BIGINT [UN]SIGNED
+		 */
+		tp := types.NewFieldType(mysql.TypeLonglong)
 		tp.SetCharset(charset.CharsetBin)
 		tp.SetCollate(charset.CollationBin)
 		tp.AddFlag(mysql.BinaryFlag)
+
+		for _, o := range $3.([]*ast.TypeOpt) {
+			if o.IsUnsigned || o.IsZerofill {
+				tp.AddFlag(mysql.UnsignedFlag)
+			}
+		}
+
 		$$ = tp
 	}
 |	"SIGNED" OptInteger
