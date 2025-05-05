@@ -1737,6 +1737,11 @@ func TestBuiltin(t *testing.T) {
 		{"SELECT CAST(data AS CHARACTER(10) CHARACTER SET utf8);", true, "SELECT CAST(`data` AS CHAR(10) CHARSET UTF8)"},
 		{"SELECT CAST(data AS BINARY)", true, "SELECT CAST(`data` AS BINARY)"},
 
+		// cast to varchar
+		{"SELECT CAST(data AS VARCHAR) FROM t;", true, "SELECT CAST(`data` AS VARCHAR) FROM `t`"},
+		{"SELECT CAST(data AS VARCHAR);", true, "SELECT CAST(`data` AS VARCHAR)"},
+		{"SELECT CAST(data AS VARCHAR(10) CHARACTER SET utf8);", true, "SELECT CAST(`data` AS VARCHAR(10) CHARSET UTF8)"},
+
 		// Integer types are supported, but converted to MySQL/ANSI compliant on restoration
 		{"SELECT CAST(data AS TINYINT)", true, "SELECT CAST(`data` AS SIGNED)"},
 		{"SELECT CAST(data AS INT1)", true, "SELECT CAST(`data` AS SIGNED)"},

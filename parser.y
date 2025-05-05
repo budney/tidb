@@ -9031,6 +9031,16 @@ CastType:
 		}
 		$$ = tp
 	}
+|	Varchar OptFieldLen OptBinary
+	{
+		tp := types.NewFieldType(mysql.TypeVarchar)
+		tp.SetFlen($2.(int))
+		tp.SetCharset($3.(*ast.OptBinary).Charset)
+		if $3.(*ast.OptBinary).IsBinary {
+			tp.AddFlag(mysql.BinaryFlag)
+		}
+		$$ = tp
+	}
 |	"DATE"
 	{
 		tp := types.NewFieldType(mysql.TypeDate)
