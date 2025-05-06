@@ -365,10 +365,18 @@ func RunTest(t *testing.T, table []testCase, enableWindowFunc bool) {
 	for _, tbl := range table {
 		_, _, err := p.Parse(tbl.src, "", "")
 		if !tbl.ok {
+			if err == nil {
+				fmt.Printf("Failed SQL was: %s\n", tbl.src)
+			}
 			require.Errorf(t, err, "source %v", tbl.src, errors.Trace(err))
 			continue
+		} else {
+			if err != nil {
+				fmt.Printf("Failed SQL was: %s\n", tbl.src)
+			}
+			require.NoErrorf(t, err, "source %v", tbl.src, errors.Trace(err))
 		}
-		require.NoErrorf(t, err, "source %v", tbl.src, errors.Trace(err))
+
 		// restore correctness test
 		if tbl.ok {
 			RunRestoreTest(t, tbl.src, tbl.restore, enableWindowFunc)

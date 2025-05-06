@@ -36,6 +36,7 @@ import (
 	"github.com/pingcap/tidb/pkg/parser/charset"
 	"github.com/pingcap/tidb/pkg/parser/types"
 	"github.com/pingcap/tidb/pkg/parser/duration"
+	driver "github.com/pingcap/tidb/pkg/parser/test_driver"
 )
 %}
 
@@ -10265,13 +10266,19 @@ LimitClause:
 	}
 
 LimitOption:
-	LengthNum
+	BitExpr
 	{
-		$$ = ast.NewValueExpr($1, parser.charset, parser.collation)
-	}
-|	paramMarker
-	{
-		$$ = ast.NewParamMarkerExpr(yyS[yypt].offset)
+		expr := $1.(ast.ExprNode)
+
+		// Upgrade to unsigned only if it's a plain int64 literal
+		if ve, ok := expr.(*driver.ValueExpr); ok {
+			if i, ok := ve.Datum.GetValue().(int64); ok {
+				ve.Datum.SetUint64(uint64(i))
+				ve.Type.AddFlag(mysql.UnsignedFlag)
+			}
+		}
+
+		$$ = expr
 	}
 
 RowOrRows:
@@ -10286,7 +10293,10 @@ FetchFirstOpt:
 	{
 		$$ = ast.NewValueExpr(uint64(1), parser.charset, parser.collation)
 	}
-|	LimitOption
+|	LengthNum
+	{
+		$$ = ast.NewValueExpr($1.(uint64), parser.charset, parser.collation)
+	}
 
 SelectStmtLimit:
 	"LIMIT" LimitOption
