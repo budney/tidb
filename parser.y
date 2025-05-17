@@ -36,6 +36,7 @@ import (
 	"github.com/pingcap/tidb/pkg/parser/charset"
 	"github.com/pingcap/tidb/pkg/parser/types"
 	"github.com/pingcap/tidb/pkg/parser/duration"
+	driver "github.com/pingcap/tidb/pkg/parser/test_driver"
 )
 %}
 
@@ -7923,7 +7924,7 @@ BitExpr:
 	{
 		$$ = &ast.BinaryOperationExpr{Op: opcode.Xor, L: $1, R: $3}
 	}
-|	SimpleExpr
+|	SimpleExpr %prec empty
 
 SimpleIdent:
 	Identifier
@@ -8052,6 +8053,32 @@ SimpleExpr:
 		}
 	}
 |	builtinCast '(' Expression "AS" CastType ArrayKwdOpt ')'
+	{
+		/* See https://dev.mysql.com/doc/refman/5.7/en/cast-functions.html#function_cast */
+		tp := $5.(*types.FieldType)
+		defaultFlen, defaultDecimal := mysql.GetDefaultFieldLengthAndDecimalForCast(tp.GetType())
+		if tp.GetFlen() == types.UnspecifiedLength {
+			tp.SetFlen(defaultFlen)
+		}
+		if tp.GetDecimal() == types.UnspecifiedLength {
+			tp.SetDecimal(defaultDecimal)
+		}
+		isArray := $6.(bool)
+		tp.SetArray(isArray)
+		explicitCharset := parser.explicitCharset
+		if isArray && !explicitCharset && tp.GetCharset() != charset.CharsetBin {
+			tp.SetCharset(charset.CharsetUTF8MB4)
+			tp.SetCollate(charset.CollationUTF8MB4)
+		}
+		parser.explicitCharset = false
+		$$ = &ast.FuncCastExpr{
+			Expr:            $3,
+			Tp:              tp,
+			FunctionType:    ast.CastFunction,
+			ExplicitCharSet: explicitCharset,
+		}
+	}
+|	builtinCast '(' SimpleExpr "AS" CastType ArrayKwdOpt ')'
 	{
 		/* See https://dev.mysql.com/doc/refman/5.7/en/cast-functions.html#function_cast */
 		tp := $5.(*types.FieldType)
@@ -8963,6 +8990,25 @@ CastType:
 		tp.AddFlag(mysql.BinaryFlag)
 		$$ = tp
 	}
+|	BooleanType FieldOpts
+	{
+		/* Cast to boolean types ALWAYS becomes SIGNED or UNSIGNED,
+		 * which MySQL interprets to mean BIGINT [UN]SIGNED
+		 */
+		tp := types.NewFieldType(mysql.TypeLonglong)
+		tp.SetCharset(charset.CharsetBin)
+		tp.SetCollate(charset.CollationBin)
+		tp.AddFlag(mysql.BinaryFlag)
+
+		// Apply field options here
+		for _, opt := range $2.([]*ast.TypeOpt) {
+			if opt.IsUnsigned || opt.IsZerofill {
+				tp.AddFlag(mysql.UnsignedFlag)
+			}
+		}
+
+		$$ = tp
+	}
 |	Char OptFieldLen OptBinary
 	{
 		tp := types.NewFieldType(mysql.TypeVarString)
@@ -8983,6 +9029,16 @@ CastType:
 		} else {
 			tp.SetCharset(parser.charset)
 			tp.SetCollate(parser.collation)
+		}
+		$$ = tp
+	}
+|	Varchar OptFieldLen OptBinary
+	{
+		tp := types.NewFieldType(mysql.TypeVarchar)
+		tp.SetFlen($2.(int))
+		tp.SetCharset($3.(*ast.OptBinary).Charset)
+		if $3.(*ast.OptBinary).IsBinary {
+			tp.AddFlag(mysql.BinaryFlag)
 		}
 		$$ = tp
 	}
@@ -9039,6 +9095,24 @@ CastType:
 		tp.SetCharset(charset.CharsetBin)
 		tp.SetCollate(charset.CollationBin)
 		tp.AddFlag(mysql.BinaryFlag)
+		$$ = tp
+	}
+|	IntegerType OptFieldLen FieldOpts
+	{
+		/* Cast to integer types ALWAYS becomes SIGNED or UNSIGNED,
+		 * which MySQL interprets to mean BIGINT [UN]SIGNED
+		 */
+		tp := types.NewFieldType(mysql.TypeLonglong)
+		tp.SetCharset(charset.CharsetBin)
+		tp.SetCollate(charset.CollationBin)
+		tp.AddFlag(mysql.BinaryFlag)
+
+		for _, o := range $3.([]*ast.TypeOpt) {
+			if o.IsUnsigned || o.IsZerofill {
+				tp.AddFlag(mysql.UnsignedFlag)
+			}
+		}
+
 		$$ = tp
 	}
 |	"SIGNED" OptInteger
@@ -10192,13 +10266,19 @@ LimitClause:
 	}
 
 LimitOption:
-	LengthNum
+	BitExpr
 	{
-		$$ = ast.NewValueExpr($1, parser.charset, parser.collation)
-	}
-|	paramMarker
-	{
-		$$ = ast.NewParamMarkerExpr(yyS[yypt].offset)
+		expr := $1.(ast.ExprNode)
+
+		// Upgrade to unsigned only if it's a plain int64 literal
+		if ve, ok := expr.(*driver.ValueExpr); ok {
+			if i, ok := ve.Datum.GetValue().(int64); ok {
+				ve.Datum.SetUint64(uint64(i))
+				ve.Type.AddFlag(mysql.UnsignedFlag)
+			}
+		}
+
+		$$ = expr
 	}
 
 RowOrRows:
@@ -10213,7 +10293,10 @@ FetchFirstOpt:
 	{
 		$$ = ast.NewValueExpr(uint64(1), parser.charset, parser.collation)
 	}
-|	LimitOption
+|	LengthNum
+	{
+		$$ = ast.NewValueExpr($1.(uint64), parser.charset, parser.collation)
+	}
 
 SelectStmtLimit:
 	"LIMIT" LimitOption
