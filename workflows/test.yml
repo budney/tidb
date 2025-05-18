@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, trunk, master, "**" ]  # adjust as needed
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'  # or whatever version you're using
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y make gcc
+
+    - name: Run tests
+      run: make test
