@@ -822,10 +822,19 @@ func (n *numa) runTestCase(pkg string, fn string) testResult {
 	var buf bytes.Buffer
 	var err error
 	var start time.Time
+
+	// Save the original GOTMPDIR
+	originalTmpDir := os.Getenv("GOTMPDIR")
+
+	// Check if GOTMPDIR is defined
+	baseTmp := ""
+	if originalTmpDir != "" {
+		baseTmp = originalTmpDir
+	}
+
 	for range 3 {
 		cmd := n.testCommand(pkg, fn)
 		cmd.Dir = filepath.Join(workDir, pkg)
-		// Combine the test case output, so the run result for failed cases can be displayed.
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
 
@@ -836,17 +845,34 @@ func (n *numa) runTestCase(pkg string, fn string) testResult {
 			cmd.Args = append(cmd.Args, "-long")
 		}
 
+		// If GOTMPDIR is set, create a subdir and set env
+		var tmpSubdir string
+		if baseTmp != "" {
+			tmpSubdir, err = os.MkdirTemp(baseTmp, "gotmp-")
+			if err != nil {
+				res.Failure = &JUnitFailure{
+					Message:  "Failed to create GOTMPDIR subdir",
+					Contents: err.Error(),
+				}
+				res.err = err
+				return res
+			}
+			// Set GOTMPDIR for the test subprocess
+			cmd.Env = append(os.Environ(), "GOTMPDIR="+tmpSubdir)
+		}
+
 		start = time.Now()
 		err = cmd.Run()
+
+		if baseTmp != "" && tmpSubdir != "" {
+			_ = os.RemoveAll(tmpSubdir)
+		}
+
 		if err != nil {
-			//lint:ignore S1020
 			if _, ok := err.(*exec.ExitError); ok {
-				// Retry 3 times to get rid of the weird error:
 				switch err.Error() {
-				case "signal: segmentation fault (core dumped)":
-					buf.Reset()
-					continue
-				case "signal: trace/breakpoint trap (core dumped)":
+				case "signal: segmentation fault (core dumped)",
+					"signal: trace/breakpoint trap (core dumped)":
 					buf.Reset()
 					continue
 				}
@@ -858,6 +884,7 @@ func (n *numa) runTestCase(pkg string, fn string) testResult {
 		}
 		break
 	}
+
 	if err != nil {
 		res.Failure = &JUnitFailure{
 			Message:  "Failed",
@@ -865,7 +892,6 @@ func (n *numa) runTestCase(pkg string, fn string) testResult {
 		}
 		res.err = err
 	}
-
 	res.d = time.Since(start)
 	res.Time = formatDurationAsSeconds(res.d)
 	return res
