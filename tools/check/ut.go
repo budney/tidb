@@ -35,6 +35,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pingcap/tidb/tools/internal/cluster"
+
 	// Set the correct value when it runs inside docker.
 	_ "go.uber.org/automaxprocs"
 	"golang.org/x/sync/errgroup"
@@ -78,6 +80,10 @@ ut build
 // build a test package
 ut build xxx
 
+// run in tight-cluster mode: compile and run clusters separately, clearing cache between
+// used to save disk space
+ut run --tight
+
 // write the junitfile
 ut run --junitfile xxx
 
@@ -109,6 +115,7 @@ func (t *task) String() string {
 var p int
 var buildParallel int
 var workDir string
+var tight bool
 
 func cmdList(args ...string) bool {
 	pkgs, err := listPackages()
@@ -119,8 +126,19 @@ func cmdList(args ...string) bool {
 
 	// list all packages
 	if len(args) == 0 {
-		for _, pkg := range pkgs {
-			fmt.Println(pkg)
+		if tight {
+			clusters := cluster.ClusterPackages(pkgs)
+			for i, cluster := range clusters {
+				fmt.Printf("Cluster %d:\n", i+1)
+				for _, pkg := range cluster {
+					fmt.Printf("  %s\n", pkg)
+				}
+				fmt.Println()
+			}
+		} else {
+			for _, pkg := range pkgs {
+				fmt.Println(pkg)
+			}
 		}
 		return false
 	}
@@ -179,11 +197,20 @@ func cmdBuild(args ...string) bool {
 
 	// build all packages
 	if len(args) == 0 {
-		if err := buildTestBinaryMulti(pkgs); err != nil {
-			log.Println("build package error", pkgs, err)
-			return false
+		if tight {
+			// build one cluster at a time, clearing the cache between
+			if err := buildTightClusterMulti(pkgs); err != nil {
+				log.Println("build in cluster mode failed", err)
+				return false
+			}
+			return true
+		} else {
+			// build *all* the test packages
+			if err := buildTestBinaryMulti(pkgs); err != nil {
+				log.Println("build package error", pkgs, err)
+				return false
+			}
 		}
-		return true
 	}
 
 	// build test binary of a single package
@@ -223,6 +250,7 @@ func cmdRunMulti(pkgs ...string) bool {
 }
 
 func cmdRun(args ...string) bool {
+	fmt.Println("cmdRun called") // DEBUG
 	var err error
 	pkgs, err := listPackages()
 	if err != nil {
@@ -239,9 +267,20 @@ func cmdRun(args ...string) bool {
 
 	// run all tests
 	if len(args) == 0 {
-		if err := buildTestBinaryMulti(pkgs); err != nil {
-			log.Println("build package error", pkgs, err)
-			return false
+		fmt.Printf("args == 0 (tight = %t)\n", tight) // DEBUG
+
+		if tight {
+			// build one cluster at a time, clearing the cache between
+			if err := buildTightClusterMulti(pkgs); err != nil {
+				log.Println("build in cluster mode failed", err)
+				return false
+			}
+		} else {
+			// build *all* the test packages
+			if err := buildTestBinaryMulti(pkgs); err != nil {
+				log.Println("build package error", pkgs, err)
+				return false
+			}
 		}
 
 		if long {
@@ -253,11 +292,13 @@ func cmdRun(args ...string) bool {
 				log.Println("run existing test cases error", err)
 				return false
 			}
+			log.Printf("Tasks: %v\n", tasks) // DEBUG
 		}
 	}
 
 	// run tests for a single package
 	if len(args) == 1 {
+		fmt.Println("args == 1") // DEBUG
 		pkg := args[0]
 		err := buildTestBinary(pkg)
 		if err != nil {
@@ -278,16 +319,19 @@ func cmdRun(args ...string) bool {
 		if long {
 			tasks = listLongTasks(pkg, tasks)
 		} else {
+			fmt.Println("listing test cases") // DEBUG
 			tasks, err = listTestCases(pkg, tasks)
 			if err != nil {
 				log.Println("list test cases error", err)
 				return false
 			}
+			log.Printf("Tasks: %v\n", tasks) // DEBUG
 		}
 	}
 
 	// run a single test
 	if len(args) == 2 {
+		fmt.Println("args == 2") // DEBUG
 		pkg := args[0]
 		err := buildTestBinary(pkg)
 		if err != nil {
@@ -359,6 +403,7 @@ func runTestCases(tasks []task) bool {
 	works := make([]numa, testWorkerCount)
 	var wg sync.WaitGroup
 	for i := range testWorkerCount {
+		fmt.Println("Firing up another worker!") // DEBUG
 		wg.Add(1)
 		go works[i].worker(&wg, taskCh)
 	}
@@ -412,16 +457,10 @@ func listTestCasesForPkgs(pkgs []string) (tasks []task, err error) {
 			fmt.Println("no test case in ", pkg)
 			continue
 		}
-		pkgCopy := pkg
-		g.Go(func() error {
-			tasks, err := listTestCases(pkgCopy, nil)
-			if err != nil {
-				log.Println("list test cases error", pkgCopy, err)
-				return withTrace(err)
-			}
-			tasksChannel <- tasks
-			return nil
-		})
+		fmt.Println("Found test binary for: " + pkg) // DEBUG
+
+		wg.Add(1)
+		go listTestCasesConcurrent(wg, pkg, tasksChannel)
 	}
 
 	if err := g.Wait(); err != nil {
@@ -430,6 +469,11 @@ func listTestCasesForPkgs(pkgs []string) (tasks []task, err error) {
 
 	close(tasksChannel)
 	for t := range tasksChannel {
+		// DEBUG
+		for _, x := range t {
+			fmt.Println("Task: " + x.String())
+		}
+
 		tasks = append(tasks, t...)
 	}
 	return tasks, nil
@@ -492,9 +536,11 @@ func handleFlags(flag string) string {
 }
 
 func handleFlag(f string) (found bool) {
+	fmt.Printf("Handling: %s\n", f) // DEBUG
 	tmp := os.Args[:0]
 	for i := range len(os.Args) {
 		if os.Args[i] == f {
+			fmt.Printf("Found arg: %s\n", f) // DEBUG
 			found = true
 			continue
 		}
@@ -516,8 +562,10 @@ var only string
 
 //nolint:typecheck
 func main() {
+	fmt.Println("main called") // DEBUG
 	junitfile = handleFlags("--junitfile")
 	coverprofile = handleFlags("--coverprofile")
+	tight = handleFlag("--tight")
 	except = handleFlags("--except")
 	only = handleFlags("--only")
 	race = handleFlag("--race")
@@ -735,6 +783,21 @@ func listTestCases(pkg string, tasks []task) ([]task, error) {
 	return tasks, nil
 }
 
+func listTestCasesConcurrent(wg *sync.WaitGroup, pkg string, tasksChannel chan<- []task) {
+	fmt.Println("listTestCasesConcurrent called") // DEBUG
+	defer wg.Done()
+	newCases, err := listNewTestCases(pkg)
+	if err != nil {
+		log.Println("list test case error", pkg, err)
+		return
+	}
+	tasks := make([]task, 0, len(newCases))
+	for _, c := range newCases {
+		tasks = append(tasks, task{pkg, c})
+	}
+	tasksChannel <- tasks
+}
+
 func filterTestCases(tasks []task, arg1 string) ([]task, error) {
 	if strings.HasPrefix(arg1, "r:") {
 		r, err := regexp.Compile(arg1[2:])
@@ -795,6 +858,7 @@ type numa struct {
 func (n *numa) worker(wg *sync.WaitGroup, ch chan task) {
 	defer wg.Done()
 	for t := range ch {
+		fmt.Println("About to run test case: " + t.pkg + ":" + t.test) // DEBUG
 		res := n.runTestCase(t.pkg, t.test)
 		if res.Failure != nil {
 			fmt.Println("[FAIL] ", t.pkg, t.test)
@@ -811,6 +875,27 @@ type testResult struct {
 	err error
 }
 
+// makeGoTmpDir accepts a command and a pre-filled testResult, and
+// returns a cleanup function and error if any.
+func makeGoTmpDir(cmd *exec.Cmd) (func(), error) {
+	// Capture the original GOTMPDIR
+	baseTmp := os.Getenv("GOTMPDIR")
+	if baseTmp == "" {
+		return func() {}, nil // no-op
+	}
+
+	// Make a new GOTMPDIR inside the original
+	tmpSubdir, err := os.MkdirTemp(baseTmp, "gotmp-")
+	if err != nil {
+		return nil, err
+	}
+
+	// Set GOTMPDIR for the test subprocess
+	cmd.Env = append(os.Environ(), "GOTMPDIR="+tmpSubdir)
+
+	return func() { _ = os.RemoveAll(tmpSubdir) }, nil
+}
+
 func (n *numa) runTestCase(pkg string, fn string) testResult {
 	res := testResult{
 		JUnitTestCase: JUnitTestCase{
@@ -823,17 +908,9 @@ func (n *numa) runTestCase(pkg string, fn string) testResult {
 	var err error
 	var start time.Time
 
-	// Save the original GOTMPDIR
-	originalTmpDir := os.Getenv("GOTMPDIR")
-
-	// Check if GOTMPDIR is defined
-	baseTmp := ""
-	if originalTmpDir != "" {
-		baseTmp = originalTmpDir
-	}
-
 	for range 3 {
 		cmd := n.testCommand(pkg, fn)
+		fmt.Printf("Running command: %s\n", cmd.String()) // DEBUG
 		cmd.Dir = filepath.Join(workDir, pkg)
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
@@ -845,28 +922,22 @@ func (n *numa) runTestCase(pkg string, fn string) testResult {
 			cmd.Args = append(cmd.Args, "-long")
 		}
 
-		// If GOTMPDIR is set, create a subdir and set env
-		var tmpSubdir string
-		if baseTmp != "" {
-			tmpSubdir, err = os.MkdirTemp(baseTmp, "gotmp-")
-			if err != nil {
-				res.Failure = &JUnitFailure{
-					Message:  "Failed to create GOTMPDIR subdir",
-					Contents: err.Error(),
-				}
-				res.err = err
-				return res
+		var cleanup func()
+
+		// Put build files in an ephemeral directory
+		cleanup, err = makeGoTmpDir(cmd)
+		if err != nil {
+			res.Failure = &JUnitFailure{
+				Message:  "Failed to create GOTMPDIR subdir",
+				Contents: err.Error(),
 			}
-			// Set GOTMPDIR for the test subprocess
-			cmd.Env = append(os.Environ(), "GOTMPDIR="+tmpSubdir)
+			res.err = err
+			return res
 		}
 
 		start = time.Now()
 		err = cmd.Run()
-
-		if baseTmp != "" && tmpSubdir != "" {
-			_ = os.RemoveAll(tmpSubdir)
-		}
+		cleanup()
 
 		if err != nil {
 			if _, ok := err.(*exec.ExitError); ok {
@@ -1003,6 +1074,7 @@ func buildTestBinary(pkg string) error {
 }
 
 func generateBuildCache() error {
+	fmt.Println("generateBuildCache called") // DEBUG
 	// cd cmd/tidb-server && go test -tags intest -exec true -vet off -toolexec=go-compile-without-link
 	cmd := exec.Command("go", "test", "-tags=intest", "-exec=true", "-vet=off")
 	goCompileWithoutLink := fmt.Sprintf("-toolexec=%s", filepath.Join(workDir, "tools", "check", "go-compile-without-link.sh"))
@@ -1011,11 +1083,52 @@ func generateBuildCache() error {
 	if err := cmd.Run(); err != nil {
 		return withTrace(err)
 	}
+	fmt.Println("generateBuildCache finished") // DEBUG
+	return nil
+}
+
+// runCmd is a helper for running a command line
+func runCmd(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = getRepoRoot() // Always run commands in the root directory
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+func getRepoRoot() string {
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		log.Fatalf("failed to find repo root: %v", err)
+	}
+	repoRoot := strings.TrimSpace(string(out))
+
+	return repoRoot
+}
+
+// buildTightClusterMulti speeds up test building by grouping builds,
+// while also saving disk space by clearing the build cache between
+// clusters.
+func buildTightClusterMulti(pkgs []string) error {
+	clusters := cluster.ClusterPackages(pkgs) // same chunking logic
+
+	for i, cluster := range clusters {
+		log.Printf("Building cluster %d with %d packages", i+1, len(cluster))
+		if err := buildTestBinaryMulti(cluster); err != nil {
+			return fmt.Errorf("build failed for cluster %d: %w", i+1, err)
+		}
+		if err := runCmd("make", "testclean"); err != nil {
+			return fmt.Errorf("cache clean failed for cluster %d: %w", i+1, err)
+		}
+	}
 	return nil
 }
 
 // buildTestBinaryMulti is much faster than build the test packages one by one.
 func buildTestBinaryMulti(pkgs []string) error {
+	fmt.Println("builtTestBinaryMulti called") // DEBUG
 	// staged build, generate the build cache for all the tests first, then generate the test binary.
 	// This way is faster than generating test binaries directly, because the cache can be used.
 	if err := generateBuildCache(); err != nil {
@@ -1044,9 +1157,14 @@ func buildTestBinaryMulti(pkgs []string) error {
 	cmd.Dir = workDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+
+	fmt.Printf("about to run command: %s\n", cmd.String()) // DEBUG
+
 	if err := cmd.Run(); err != nil {
 		return withTrace(err)
 	}
+
+	fmt.Printf("Done running command: %s\n", cmd.String()) // DEBUG
 	return nil
 }
 

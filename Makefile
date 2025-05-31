@@ -111,6 +111,11 @@ check-parallel:
 
 CLEAN_UT_BINARY := find . -name '*.test.bin'| xargs rm -f
 
+.PHONY: testclean
+testclean:
+	$(GO) clean -cache
+	@$(CLEAN_UT_BINARY)
+
 .PHONY: clean
 clean: failpoint-disable
 	$(GO) clean -i ./...
