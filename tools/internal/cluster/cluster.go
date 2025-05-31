@@ -19,7 +19,7 @@ const maxDepFrequency = 0.50
 
 // This setting caps the size of any one cluster, as a crude
 // method of preventing giant super-clusters.
-const maxClusterSize = 50
+const maxClusterSize = 25
 
 // clusterPackages groups the given packages into clusters based on shared dependencies.
 func ClusterPackages(pkgs []string) [][]string {
