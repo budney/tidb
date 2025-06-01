@@ -449,8 +449,16 @@ func listTestCasesForPkgs(pkgs []string) (tasks []task, err error) {
 			continue
 		}
 
-		wg.Add(1)
-		go listTestCasesConcurrent(wg, pkg, tasksChannel)
+		pkgCopy := pkg
+		g.Go(func() error {
+			tasks, err := listTestCases(pkgCopy, nil)
+			if err != nil {
+				log.Println("list test cases error", pkgCopy, err)
+				return withTrace(err)
+			}
+			tasksChannel <- tasks
+			return nil
+		})
 	}
 
 	if err := g.Wait(); err != nil {
@@ -763,20 +771,6 @@ func listTestCases(pkg string, tasks []task) ([]task, error) {
 	}
 
 	return tasks, nil
-}
-
-func listTestCasesConcurrent(wg *sync.WaitGroup, pkg string, tasksChannel chan<- []task) {
-	defer wg.Done()
-	newCases, err := listNewTestCases(pkg)
-	if err != nil {
-		log.Println("list test case error", pkg, err)
-		return
-	}
-	tasks := make([]task, 0, len(newCases))
-	for _, c := range newCases {
-		tasks = append(tasks, task{pkg, c})
-	}
-	tasksChannel <- tasks
 }
 
 func filterTestCases(tasks []task, arg1 string) ([]task, error) {
