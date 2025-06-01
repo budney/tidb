@@ -5,23 +5,29 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"golang.org/x/exp/slices"
 )
 
-// This constant specifies a threshold for dependencies that
-// are just too common and that should be ignored.
+var modulePath = filepath.Join("github.com", "pingcap", "tidb")
+
+// maxDepFrequency specifies a threshold for dependencies that are just
+// too common and that should be ignored.
 const maxDepFrequency = 0.50
 
-// This setting caps the size of any one cluster, as a crude
-// method of preventing giant super-clusters.
-const maxClusterSize = 25
+// maxClusterSize caps the size of any one cluster, as a crude method
+// of preventing giant super-clusters. This number was experimentally
+// arrived at to keep disk usage around 10GB or less.
+const maxClusterSize = 37
 
 // clusterPackages groups the given packages into clusters based on shared dependencies.
+// It uses agglomerative clustering based on the number of dependencies in common, limited
+// by maxClusterSize. The resulting clusters are sorted by decreasing size, and then
+// merged again in order to yield a minimal set of clusters.
 func ClusterPackages(pkgs []string) [][]string {
 	deps, freqs, err := collectDependencies(pkgs)
 	if err != nil {
@@ -88,13 +94,40 @@ func ClusterPackages(pkgs []string) [][]string {
 		result = append(result, group)
 	}
 
-	// Sort to get biggest groups first
+	// Sort by decreasing size
 	sort.Slice(result, func(i, j int) bool {
 		return len(result[i]) < len(result[j])
 	})
 	slices.Reverse(result)
 
+	// Finally, consolidate clusters by first-fit
+	result = consolidate(result)
+
 	return result
+}
+
+// consolidate combines arrays of strings by putting each array into
+// the first bin that has room for it without exceeding the maximum size
+// limit. The arrays are assimed to be sorted by descending size. This
+// will yield a result within about 22% of the minimal number of bins.
+func consolidate(clusters [][]string) [][]string {
+	merged := make([][]string, 0)
+
+	for _, cluster := range clusters {
+		placed := false
+		for j, bin := range merged {
+			if len(bin)+len(cluster) <= maxClusterSize {
+				merged[j] = append(bin, cluster...)
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			merged = append(merged, make([]string, 0))
+		}
+	}
+
+	return merged
 }
 
 type edge struct {
@@ -102,39 +135,15 @@ type edge struct {
 	weight int
 }
 
-func getModulePrefix() (string, error) {
-	f, err := os.Open("go.mod")
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "module ") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				return fields[1] + "/", nil
-			}
-		}
-	}
-	return "", fmt.Errorf("module line not found in go.mod")
-}
-
-// collectDependnecies calls "go list" to list all dependencies of each package in
-// the project, and returns a map of packages to dependencies that can be used
-// to look for overlapping dependencies between packages.
+// collectDependnecies calls "go list" to list all dependencies of each
+// package in the project, and returns a map of packages to dependencies
+// that can be used to count the overlapping dependencies. This gives
+// a weight for the graph we're building.
 func collectDependencies(pkgs []string) (
 	map[string]map[string]struct{},
 	map[string]int,
 	error,
 ) {
-	modulePrefix, err := getModulePrefix()
-	if err != nil {
-		log.Fatalf("failed to get module prefix: %v", err)
-	}
-
 	cmd := exec.Command("go", "list", "-f", "{{.ImportPath}}:{{.Deps}}", "./...")
 	out, err := cmd.Output()
 	if err != nil {
@@ -152,15 +161,15 @@ func collectDependencies(pkgs []string) (
 			continue
 		}
 
-		pkg := strings.TrimPrefix(strings.TrimSpace(parts[0]), modulePrefix)
+		pkg := strings.TrimPrefix(strings.TrimSpace(parts[0]), modulePath)
 		depSet := make(map[string]struct{})
 
 		for _, dep := range strings.Fields(parts[1]) {
 			var trimmedDep string = dep
 
 			// trim the module prefix; otherwise leave alone
-			if strings.HasPrefix(dep, modulePrefix) {
-				trimmedDep = strings.TrimPrefix(dep, modulePrefix)
+			if strings.HasPrefix(dep, modulePath) {
+				trimmedDep = strings.TrimPrefix(dep, modulePath)
 			}
 
 			depSet[trimmedDep] = struct{}{}
@@ -176,10 +185,14 @@ func collectDependencies(pkgs []string) (
 func buildEdges(deps map[string]map[string]struct{}, freqs map[string]int) []edge {
 	var edges []edge
 	var pkgs []string
+
+	// copy the array of packages
 	for p := range deps {
 		pkgs = append(pkgs, p)
 	}
-	for i := 0; i < len(pkgs); i++ {
+
+	// create a graph weighted by the number of shared dependencies
+	for i := range pkgs {
 		for j := i + 1; j < len(pkgs); j++ {
 			a, b := pkgs[i], pkgs[j]
 			shared := countFilteredOverlap(deps[a], deps[b], freqs, int(maxDepFrequency*float64(len(pkgs))))
@@ -188,22 +201,13 @@ func buildEdges(deps map[string]map[string]struct{}, freqs map[string]int) []edg
 			}
 		}
 	}
+
+	// sort the edges by weight for agglomerative clustering
 	sort.Slice(edges, func(i, j int) bool {
 		return edges[i].weight > edges[j].weight
 	})
-	return edges
-}
 
-// countOverlap counts all overlapping dependencies between
-// two modules.
-func countOverlap(a, b map[string]struct{}) int {
-	count := 0
-	for k := range a {
-		if _, ok := b[k]; ok {
-			count++
-		}
-	}
-	return count
+	return edges
 }
 
 // countFilteredOverlap counts the overlapping dpendencies between
