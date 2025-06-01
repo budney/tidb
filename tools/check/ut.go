@@ -250,7 +250,6 @@ func cmdRunMulti(pkgs ...string) bool {
 }
 
 func cmdRun(args ...string) bool {
-	fmt.Println("cmdRun called") // DEBUG
 	var err error
 	pkgs, err := listPackages()
 	if err != nil {
@@ -267,8 +266,6 @@ func cmdRun(args ...string) bool {
 
 	// run all tests
 	if len(args) == 0 {
-		fmt.Printf("args == 0 (tight = %t)\n", tight) // DEBUG
-
 		if tight {
 			// build one cluster at a time, clearing the cache between
 			if err := buildTightClusterMulti(pkgs); err != nil {
@@ -292,13 +289,11 @@ func cmdRun(args ...string) bool {
 				log.Println("run existing test cases error", err)
 				return false
 			}
-			log.Printf("Tasks: %v\n", tasks) // DEBUG
 		}
 	}
 
 	// run tests for a single package
 	if len(args) == 1 {
-		fmt.Println("args == 1") // DEBUG
 		pkg := args[0]
 		err := buildTestBinary(pkg)
 		if err != nil {
@@ -319,19 +314,16 @@ func cmdRun(args ...string) bool {
 		if long {
 			tasks = listLongTasks(pkg, tasks)
 		} else {
-			fmt.Println("listing test cases") // DEBUG
 			tasks, err = listTestCases(pkg, tasks)
 			if err != nil {
 				log.Println("list test cases error", err)
 				return false
 			}
-			log.Printf("Tasks: %v\n", tasks) // DEBUG
 		}
 	}
 
 	// run a single test
 	if len(args) == 2 {
-		fmt.Println("args == 2") // DEBUG
 		pkg := args[0]
 		err := buildTestBinary(pkg)
 		if err != nil {
@@ -403,7 +395,6 @@ func runTestCases(tasks []task) bool {
 	works := make([]numa, testWorkerCount)
 	var wg sync.WaitGroup
 	for i := range testWorkerCount {
-		fmt.Println("Firing up another worker!") // DEBUG
 		wg.Add(1)
 		go works[i].worker(&wg, taskCh)
 	}
@@ -457,7 +448,6 @@ func listTestCasesForPkgs(pkgs []string) (tasks []task, err error) {
 			fmt.Println("no test case in ", pkg)
 			continue
 		}
-		fmt.Println("Found test binary for: " + pkg) // DEBUG
 
 		wg.Add(1)
 		go listTestCasesConcurrent(wg, pkg, tasksChannel)
@@ -469,11 +459,6 @@ func listTestCasesForPkgs(pkgs []string) (tasks []task, err error) {
 
 	close(tasksChannel)
 	for t := range tasksChannel {
-		// DEBUG
-		for _, x := range t {
-			fmt.Println("Task: " + x.String())
-		}
-
 		tasks = append(tasks, t...)
 	}
 	return tasks, nil
@@ -536,11 +521,9 @@ func handleFlags(flag string) string {
 }
 
 func handleFlag(f string) (found bool) {
-	fmt.Printf("Handling: %s\n", f) // DEBUG
 	tmp := os.Args[:0]
 	for i := range len(os.Args) {
 		if os.Args[i] == f {
-			fmt.Printf("Found arg: %s\n", f) // DEBUG
 			found = true
 			continue
 		}
@@ -562,7 +545,6 @@ var only string
 
 //nolint:typecheck
 func main() {
-	fmt.Println("main called") // DEBUG
 	junitfile = handleFlags("--junitfile")
 	coverprofile = handleFlags("--coverprofile")
 	tight = handleFlag("--tight")
@@ -784,7 +766,6 @@ func listTestCases(pkg string, tasks []task) ([]task, error) {
 }
 
 func listTestCasesConcurrent(wg *sync.WaitGroup, pkg string, tasksChannel chan<- []task) {
-	fmt.Println("listTestCasesConcurrent called") // DEBUG
 	defer wg.Done()
 	newCases, err := listNewTestCases(pkg)
 	if err != nil {
@@ -858,7 +839,6 @@ type numa struct {
 func (n *numa) worker(wg *sync.WaitGroup, ch chan task) {
 	defer wg.Done()
 	for t := range ch {
-		fmt.Println("About to run test case: " + t.pkg + ":" + t.test) // DEBUG
 		res := n.runTestCase(t.pkg, t.test)
 		if res.Failure != nil {
 			fmt.Println("[FAIL] ", t.pkg, t.test)
@@ -910,7 +890,6 @@ func (n *numa) runTestCase(pkg string, fn string) testResult {
 
 	for range 3 {
 		cmd := n.testCommand(pkg, fn)
-		fmt.Printf("Running command: %s\n", cmd.String()) // DEBUG
 		cmd.Dir = filepath.Join(workDir, pkg)
 		cmd.Stdout = &buf
 		cmd.Stderr = &buf
@@ -1073,17 +1052,27 @@ func buildTestBinary(pkg string) error {
 	return nil
 }
 
-func generateBuildCache() error {
-	fmt.Println("generateBuildCache called") // DEBUG
+func generateBuildCache(pkgs []string) error {
+	packages := make([]string, 0)
+
+	// convert the packages into the form needed by go test. The
+	// packages are relative to the repository root, two
+	// directories up.
+	for _, pkg := range pkgs {
+		packages = append(packages, "../../"+pkg)
+	}
+
 	// cd cmd/tidb-server && go test -tags intest -exec true -vet off -toolexec=go-compile-without-link
 	cmd := exec.Command("go", "test", "-tags=intest", "-exec=true", "-vet=off")
+	cmd.Dir = filepath.Join(workDir, "cmd", "tidb-server")
+
 	goCompileWithoutLink := fmt.Sprintf("-toolexec=%s", filepath.Join(workDir, "tools", "check", "go-compile-without-link.sh"))
 	cmd.Args = append(cmd.Args, goCompileWithoutLink)
-	cmd.Dir = filepath.Join(workDir, "cmd", "tidb-server")
+	cmd.Args = append(cmd.Args, packages...) // Add the target pakcages
+
 	if err := cmd.Run(); err != nil {
 		return withTrace(err)
 	}
-	fmt.Println("generateBuildCache finished") // DEBUG
 	return nil
 }
 
@@ -1128,10 +1117,9 @@ func buildTightClusterMulti(pkgs []string) error {
 
 // buildTestBinaryMulti is much faster than build the test packages one by one.
 func buildTestBinaryMulti(pkgs []string) error {
-	fmt.Println("builtTestBinaryMulti called") // DEBUG
 	// staged build, generate the build cache for all the tests first, then generate the test binary.
 	// This way is faster than generating test binaries directly, because the cache can be used.
-	if err := generateBuildCache(); err != nil {
+	if err := generateBuildCache(pkgs); err != nil {
 		return withTrace(err)
 	}
 
@@ -1158,13 +1146,10 @@ func buildTestBinaryMulti(pkgs []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	fmt.Printf("about to run command: %s\n", cmd.String()) // DEBUG
-
 	if err := cmd.Run(); err != nil {
 		return withTrace(err)
 	}
 
-	fmt.Printf("Done running command: %s\n", cmd.String()) // DEBUG
 	return nil
 }
 
