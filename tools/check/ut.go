@@ -388,9 +388,13 @@ func cmdRun(args ...string) bool {
 		isSuccess := true
 		start := time.Now()
 
-		for _, cluster := range clusters {
+		for i, cluster := range clusters {
 			if !buildAndRunTests(cluster, onlyCases, exceptCases, matching) {
 				isSuccess = false
+			}
+
+			if err := runCmd("make", "testclean"); err != nil {
+				log.Printf("cache clean failed for cluster %d: %v", i+1, err)
 			}
 		}
 
@@ -1123,7 +1127,7 @@ func buildTightClusterMulti(pkgs []string) error {
 		if err := buildTestBinaryMulti(cluster); err != nil {
 			return fmt.Errorf("build failed for cluster %d: %w", i+1, err)
 		}
-		if err := runCmd("make", "testclean"); err != nil {
+		if err := runCmd("go", "clean", "-cache"); err != nil {
 			return fmt.Errorf("cache clean failed for cluster %d: %w", i+1, err)
 		}
 	}
