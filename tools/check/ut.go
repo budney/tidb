@@ -21,14 +21,12 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"maps"
 	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -80,7 +78,7 @@ ut build
 // build a test package
 ut build xxx
 
-// run in tight-cluster mode: compile and run clusters separately, clearing cache between
+// run in tight-cluster mode: compile and run clusters separately, clearing cache between.
 // used to save disk space
 ut run --tight
 
@@ -167,7 +165,7 @@ func cmdList(args ...string) bool {
 			return false
 		}
 
-		res, err := listTestCases(pkg, nil)
+		res, err := listTestCases(nil, pkg)
 		if err != nil {
 			log.Println("list test cases for package error", err)
 			return false
@@ -225,165 +223,184 @@ func cmdBuild(args ...string) bool {
 	return true
 }
 
-func cmdRunMulti(pkgs ...string) bool {
+// buildAndRunTests handles all of the permutations of "run" command.
+// It will build tests for the specified packages, filter cases based
+// on various criteria, run the tests, and return success or failure.
+func buildAndRunTests(pkgs []string, onlyCases, exceptCases map[string]struct{}, matching string) bool {
 	var err error
+
+	// if `-long` flag is set, only build long tests and run them
+	if long {
+		filtered := make([]string, 0)
+		for _, pkg := range pkgs {
+			if _, ok := longTests[pkg]; ok {
+				filtered = append(filtered, pkg)
+			}
+		}
+		pkgs = filtered
+	}
+
+	// if there are no tests to run, then they all pass
 	if len(pkgs) == 0 {
 		return true
 	}
 
-	// Build tasks
-	var tasks []task
 	start := time.Now()
+
+	// build ALL the packages requested
 	err = buildTestBinaryMulti(pkgs)
 	if err != nil {
 		log.Println("build package error", pkgs, err)
 		return false
 	}
 
-	if tasks, err = listTestCasesForPkgs(pkgs); err != nil {
+	var tasks []task
+
+	// list all the test cases in the packages we built
+	tasks, err = listTestCasesForPkgs(pkgs)
+	if err != nil {
 		log.Println("run existing test cases error", err)
 		return false
 	}
 
-	fmt.Printf("building task finish, maxproc=%d, count=%d, takes=%v\n", buildParallel, len(tasks), time.Since(start))
-	return runTestCases(tasks)
-}
-
-func cmdRun(args ...string) bool {
-	var err error
-	pkgs, err := listPackages()
-	if err != nil {
-		fmt.Println("list packages error", err)
-		return false
+	if len(tasks) == 0 {
+		// this seems unlikely, but still
+		log.Println("no test cases found to run")
+		return true
 	}
-	tasks := make([]task, 0, 5000)
-	start := time.Now()
 
-	// if `-long` flag is set, only build long tests and run them
 	if long {
-		pkgs = slices.Collect(maps.Keys(longTests))
+		longTasks := make(map[string]struct{})
+
+		// only execute the "long" test cases
+		for _, t := range listLongTasks(tasks, pkgs...) {
+			// intersected with the restriction already specified, if any
+			if _, ok := onlyCases[t.String()]; onlyCases != nil && !ok {
+				continue
+			}
+			longTasks[t.String()] = struct{}{}
+		}
+
+		onlyCases = longTasks
 	}
 
-	// run all tests
-	if len(args) == 0 {
-		if tight {
-			// build one cluster at a time, clearing the cache between
-			if err := buildTightClusterMulti(pkgs); err != nil {
-				log.Println("build in cluster mode failed", err)
-				return false
-			}
-		} else {
-			// build *all* the test packages
-			if err := buildTestBinaryMulti(pkgs); err != nil {
-				log.Println("build package error", pkgs, err)
-				return false
+	// exclude the specified cases
+	if exceptCases != nil {
+		tmp := tasks[:0]
+		for _, task := range tasks {
+			if _, ok := exceptCases[task.String()]; !ok {
+				tmp = append(tmp, task)
 			}
 		}
-
-		if long {
-			for _, pkg := range pkgs {
-				tasks = listLongTasks(pkg, tasks)
-			}
-		} else {
-			if tasks, err = listTestCasesForPkgs(pkgs); err != nil {
-				log.Println("run existing test cases error", err)
-				return false
-			}
-		}
+		tasks = tmp
 	}
 
-	// run tests for a single package
-	if len(args) == 1 {
-		pkg := args[0]
-		err := buildTestBinary(pkg)
-		if err != nil {
-			log.Println("build package error", pkg, err)
-			return false
-		}
-		exist, err := testBinaryExist(pkg)
-		if err != nil {
-			log.Println("check test binary existence error", err)
-			return false
-		}
-
-		if !exist {
-			fmt.Println("no test case in ", pkg)
-			return false
-		}
-
-		if long {
-			tasks = listLongTasks(pkg, tasks)
-		} else {
-			tasks, err = listTestCases(pkg, tasks)
-			if err != nil {
-				log.Println("list test cases error", err)
-				return false
+	// restrict to the specified cases
+	if onlyCases != nil {
+		tmp := tasks[:0]
+		for _, task := range tasks {
+			if _, ok := onlyCases[task.String()]; ok {
+				tmp = append(tmp, task)
 			}
 		}
+		tasks = tmp
 	}
 
-	// run a single test
-	if len(args) == 2 {
-		pkg := args[0]
-		err := buildTestBinary(pkg)
-		if err != nil {
-			log.Println("build package error", pkg, err)
-			return false
-		}
-		exist, err := testBinaryExist(pkg)
-		if err != nil {
-			log.Println("check test binary existence error", err)
-			return false
-		}
-		if !exist {
-			fmt.Println("no test case in ", pkg)
-			return false
-		}
-
-		tasks, err = listTestCases(pkg, tasks)
-		if err != nil {
-			log.Println("list test cases error", err)
-			return false
-		}
-		tasks, err = filterTestCases(tasks, args[1])
+	// also limit it to matching cases
+	if matching != "" {
+		tasks, err = filterTestCases(tasks, matching)
 		if err != nil {
 			log.Println("filter test cases error", err)
 			return false
 		}
 	}
 
+	fmt.Printf("building task finish, maxproc=%d, count=%d, takes=%v\n", buildParallel, len(tasks), time.Since(start))
+	return runTestCases(tasks)
+}
+
+func cmdRunMulti(pkgs ...string) bool {
+	if len(pkgs) == 0 {
+		return true
+	}
+
+	if len(pkgs) <= 2 {
+		return buildAndRunTests(pkgs, nil, nil, "")
+	}
+
+	// delegate to cmdRun, which implements more options
+	return cmdRun(pkgs...)
+}
+
+func cmdRun(args ...string) bool {
+	var err error
+	var pkgs []string
+
+	var exceptCases map[string]struct{}
+	var onlyCases map[string]struct{}
+	var matching string
+
 	if except != "" {
-		list, err := parseCaseListFromFile(except)
+		exceptCases, err = parseCaseListFromFile(except)
 		if err != nil {
 			log.Println("parse --except file error", err)
 			return false
 		}
-		tmp := tasks[:0]
-		for _, task := range tasks {
-			if _, ok := list[task.String()]; !ok {
-				tmp = append(tmp, task)
-			}
-		}
-		tasks = tmp
 	}
 
 	if only != "" {
-		list, err := parseCaseListFromFile(only)
+		onlyCases, err = parseCaseListFromFile(only)
 		if err != nil {
 			log.Println("parse --only file error", err)
 			return false
 		}
-		tmp := tasks[:0]
-		for _, task := range tasks {
-			if _, ok := list[task.String()]; ok {
-				tmp = append(tmp, task)
-			}
-		}
-		tasks = tmp
 	}
 
-	fmt.Printf("building task finish, parallelism=%d, count=%d, takes=%v\n", buildParallel, len(tasks), time.Since(start))
-	return runTestCases(tasks)
+	// run tests for a single package
+	if len(args) == 1 {
+		pkgs = []string{args[0]}
+		return buildAndRunTests(pkgs, onlyCases, exceptCases, matching)
+	}
+
+	// run matching test(s) in a single package
+	if len(args) == 2 {
+		pkgs = []string{args[0]}
+		matching = args[1]
+
+		return buildAndRunTests(pkgs, onlyCases, exceptCases, matching)
+	}
+
+	if len(args) == 0 {
+		// "run" with no args means shoot the works
+		pkgs, err = listPackages()
+		if err != nil {
+			fmt.Println("list packages error", err)
+			return false
+		}
+	} else {
+		// more than 2 args means "run this list"
+		// it's a synonym for run-multi
+		pkgs = args
+	}
+
+	if tight {
+		clusters := cluster.ClusterPackages(pkgs) // some chunking logic
+		isSuccess := true
+		start := time.Now()
+
+		for _, cluster := range clusters {
+			if !buildAndRunTests(cluster, onlyCases, exceptCases, matching) {
+				isSuccess = false
+			}
+		}
+
+		fmt.Printf("build and run task finish, parallelism=%d, batches=%d, takes=%v\n", buildParallel, len(clusters), time.Since(start))
+		return isSuccess
+	} else {
+		return buildAndRunTests(pkgs, onlyCases, exceptCases, matching)
+	}
+
+	// execution can't reach this point
 }
 
 func runTestCases(tasks []task) bool {
@@ -451,7 +468,7 @@ func listTestCasesForPkgs(pkgs []string) (tasks []task, err error) {
 
 		pkgCopy := pkg
 		g.Go(func() error {
-			tasks, err := listTestCases(pkgCopy, nil)
+			tasks, err := listTestCases(nil, pkgCopy)
 			if err != nil {
 				log.Println("list test cases error", pkgCopy, err)
 				return withTrace(err)
@@ -760,14 +777,16 @@ func (b blocksByStart) Less(i, j int) bool {
 }
 
 // listTestCases list all test cases of a package and append to a slice.
-func listTestCases(pkg string, tasks []task) ([]task, error) {
-	newCases, err := listNewTestCases(pkg)
-	if err != nil {
-		log.Println("list test case error", pkg, err)
-		return nil, withTrace(err)
-	}
-	for _, c := range newCases {
-		tasks = append(tasks, task{pkg, c})
+func listTestCases(tasks []task, pkgs ...string) ([]task, error) {
+	for _, pkg := range pkgs {
+		newCases, err := listNewTestCases(pkg)
+		if err != nil {
+			log.Println("list test case error", pkg, err)
+			return nil, withTrace(err)
+		}
+		for _, c := range newCases {
+			tasks = append(tasks, task{pkg, c})
+		}
 	}
 
 	return tasks, nil
@@ -796,9 +815,11 @@ func filterTestCases(tasks []task, arg1 string) ([]task, error) {
 	return tmp, nil
 }
 
-func listLongTasks(pkg string, tasks []task) []task {
-	for _, t := range longTests[pkg] {
-		tasks = append(tasks, task{pkg, t})
+func listLongTasks(tasks []task, pkgs ...string) []task {
+	for _, pkg := range pkgs {
+		for _, t := range longTests[pkg] {
+			tasks = append(tasks, task{pkg, t})
+		}
 	}
 	return tasks
 }
@@ -1098,7 +1119,7 @@ func buildTightClusterMulti(pkgs []string) error {
 	clusters := cluster.ClusterPackages(pkgs) // same chunking logic
 
 	for i, cluster := range clusters {
-		log.Printf("Building cluster %d with %d packages", i+1, len(cluster))
+		log.Printf("Building cluster %d of %d with %d packages", i+1, len(clusters), len(cluster))
 		if err := buildTestBinaryMulti(cluster); err != nil {
 			return fmt.Errorf("build failed for cluster %d: %w", i+1, err)
 		}
