@@ -64,7 +64,15 @@ ls "${HOST_DIR}" -R
 
 mkdir -p "${HOST_DIR}/remote"
 
-bin/mc config host add minio http://127.0.0.1:5000 testid testkey8
+# Set up MinIO alias depending on mc version
+if mc alias set >/dev/null 2>&1; then
+    # Newer mc: use alias set
+    mc alias set minio http://127.0.0.1:5000 testid testkey8
+else
+    # Older mc: fallback to config host add
+    mc config host add minio http://127.0.0.1:5000 testid testkey8
+fi
+
 bin/mc cp minio/mybucket/dump/s3-schema-create.sql "${HOST_DIR}/remote/s3-schema-create.sql"
 bin/mc cp minio/mybucket/dump/s3.t-schema.sql "${HOST_DIR}/remote/s3.t-schema.sql"
 bin/mc cp minio/mybucket/dump/s3.t.000000000.sql "${HOST_DIR}/remote/s3.t.000000000.sql"
