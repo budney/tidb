@@ -34,6 +34,7 @@ import (
 	"github.com/pingcap/tipb/go-tipb"
 	"github.com/tikv/client-go/v2/tikvrpc/interceptor"
 	"go.uber.org/zap"
+	_ "go.uber.org/zap"
 	"google.golang.org/grpc/metadata"
 )
 
